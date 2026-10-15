@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhilatelyAI - Local Appraiser</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #e0e5ec;
+            --clay-box: 9px 9px 16px rgb(163,177,198,0.6), -9px -9px 16px rgba(255,255,255, 0.5);
+            --clay-inset: inset 6px 6px 10px 0 rgba(163, 177, 198, 0.5), inset -6px -6px 10px 0 rgba(255, 255, 255, 0.5);
+            --text-main: #4a5568;
+            --accent: #667eea;
+            --accent-hover: #5a67d8;
+        }
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 1100px;
+            display: grid;
+            grid-template-columns: 1fr 1.2fr;
+            gap: 2rem;
+        }
+        .clay-card {
+            background-color: var(--bg-color);
+            border-radius: 20px;
+            box-shadow: var(--clay-box);
+            padding: 2rem;
+            height: fit-content;
+        }
+        h1 { margin-top: 0; color: var(--accent); }
+        h3 { color: var(--text-main); margin-bottom: 0.5rem; }
+        .drop-zone {
+            height: 250px;
+            border-radius: 15px;
+            box-shadow: var(--clay-inset);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            cursor: pointer;
+            margin-bottom: 1.5rem;
+            transition: 0.2s;
+            overflow: hidden;
+            position: relative;
+        }
+        .drop-zone:hover { box-shadow: var(--clay-box); }
+        .drop-zone img { max-width: 100%; max-height: 100%; object-fit: contain; display: none; }
+        .drop-zone span { position: absolute; pointer-events: none; font-weight: 500; }
+        button {
+            width: 100%;
+            padding: 1rem;
+            border: none;
+            border-radius: 15px;
+            background-color: var(--bg-color);
+            box-shadow: var(--clay-box);
+            color: var(--accent);
+            font-size: 1.1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: 0.2s;
+        }
+        button:active { box-shadow: var(--clay-inset); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .action-row {
+            display: flex;
+            gap: 1rem;
+            margin-top: 1rem;
+            margin-bottom: 2rem;
+        }
+        .action-btn {
+            font-size: 0.9rem;
+            padding: 0.75rem;
+            color: var(--text-main);
+        }
+        pre {
+            background: #d1d9e6;
+            padding: 1rem;
+            border-radius: 10px;
+            box-shadow: var(--clay-inset);
+            overflow-x: auto;
+            font-size: 0.9rem;
+        }
+        .loader { display: none; margin-top: 15px; font-weight: bold; color: var(--accent); text-align: center; }
+        
+        @media (max-width: 768px) { .container { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Left Column: Upload & Controls -->
+    <div class="clay-card">
+        <h1>📮 PhilatelyAI</h1>
+        <p><strong>100% Offline Appraiser & Marketplace Generator</strong><br>Preserve high-value privacy while instantly generating dealer-ready listings.</p>
+        
+        <input type="file" id="fileInput" accept="image/*" style="display: none;">
+        <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+            <span id="dropText">Click or Drop Stamp Image Here</span>
+            <img id="preview" alt="Stamp Preview">
+        </div>
+        
+        <button id="appraiseBtn" disabled>Analyze & Draft Listing</button>
+        <div class="loader" id="loader">Running local Gemma 4 Inference...</div>
+    </div>
+
+    <!-- Right Column: Results -->
+    <div class="clay-card" id="resultsCard" style="display: none;">
+        <div id="markdownOutput"></div>
+        
+        <div class="action-row">
+            <button class="action-btn" id="copyMarkdownBtn">📋 Copy Listing Draft</button>
+        </div>
+
+        <hr style="border: 0; border-top: 2px solid #d1d9e6; margin: 1.5rem 0;">
+
+        <h3>Extracted JSON Metadata</h3>
+        <pre><code id="jsonOutput"></code></pre>
+        
+        <div class="action-row">
+            <button class="action-btn" id="downloadJsonBtn">💾 Download .json File</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const fileInput = document.getElementById('fileInput');
+    const dropZone = document.getElementById('dropZone');
+    const preview = document.getElementById('preview');
+    const dropText = document.getElementById('dropText');
+    const appraiseBtn = document.getElementById('appraiseBtn');
+    const loader = document.getElementById('loader');
+    const resultsCard = document.getElementById('resultsCard');
+    
+    let selectedFile = null;
+    let rawMarkdown = "";
+    let rawJson = "";
+
+    // Handle File Selection
+    fileInput.addEventListener('change', function(e) {
+        if (e.target.files.length > 0) {
+            selectedFile = e.target.files[0];
+            preview.src = URL.createObjectURL(selectedFile);
+            preview.style.display = 'block';
+            dropText.style.display = 'none';
+            appraiseBtn.disabled = false;
+        }
+    });
+
+    // Handle Inference Request
+    appraiseBtn.addEventListener('click', async () => {
+        if (!selectedFile) return;
+        
+        appraiseBtn.disabled = true;
+        loader.style.display = 'block';
+        resultsCard.style.display = 'none';
+
+        const formData = new FormData();
+        formData.append('image', selectedFile);
+
+        try {
+            const response = await fetch('/api/appraise', {
+                method: 'POST',
+                body: formData
+            });
+            const data = await response.json();
+            
+            rawMarkdown = data.markdown;
+            rawJson = data.json;
+
+            document.getElementById('markdownOutput').innerHTML = marked.parse(rawMarkdown);
+            document.getElementById('jsonOutput').textContent = rawJson;
+            resultsCard.style.display = 'block';
+        } catch (error) {
+            alert('Error running appraisal. Is the backend running?');
+        } finally {
+            appraiseBtn.disabled = false;
+            loader.style.display = 'none';
+        }
+    });
+
+    // Copy Markdown to Clipboard
+    document.getElementById('copyMarkdownBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(rawMarkdown).then(() => {
+            const btn = document.getElementById('copyMarkdownBtn');
+            btn.textContent = "✅ Copied!";
+            setTimeout(() => btn.textContent = "📋 Copy Listing Draft", 2000);
+        });
+    });
+
+    // Download JSON as File
+    document.getElementById('downloadJsonBtn').addEventListener('click', () => {
+        const blob = new Blob([rawJson], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'stamp_metadata.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    });
+</script>
+</body>
+</html>
